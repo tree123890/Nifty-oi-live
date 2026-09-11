@@ -1,0 +1,16 @@
+{
+  "name": "nifty-oi-mobile-v3",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Mobile-ready NIFTY OI analyzer with deployable Node backend, cached NSE polling and 1-second UI refresh.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
