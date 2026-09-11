@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>NIFTY OI Live URL Analyzer</title>
+<link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<main class="wrap">
+  <header>
+    <p class="eyebrow">NSE LIVE OPTION CHAIN</p>
+    <h1>NIFTY OI Live Analyzer</h1>
+    <p class="sub">Paste the NSE option-chain page URL. The app fetches the option-chain data server-side and recalculates OI metrics automatically.</p>
+  </header>
+
+  <section class="urlbox">
+    <input id="urlInput" value="https://www.nseindia.com/get-quote/optionchain/NIFTY/NIFTY-50"/>
+    <button id="startBtn">Start Live</button>
+    <button id="stopBtn" class="ghost">Stop</button>
+  </section>
+
+  <section class="statusline">
+    <span id="status">Stopped</span>
+    <span>Refresh: <strong id="refreshLabel">1 sec</strong></span>
+    <span>Last fetch: <strong id="lastFetch">—</strong></span>
+  </section>
+
+  <section class="cards">
+    <article class="card wide">
+      <span class="label">One-line market summary</span>
+      <div id="bias" class="bigtext">—</div>
+      <p id="summary">Start live mode to analyze the market.</p>
+    </article>
+    <article class="card"><span class="label">NIFTY</span><div id="spot" class="metric">—</div></article>
+    <article class="card"><span class="label">PCR OI</span><div id="pcr" class="metric">—</div></article>
+    <article class="card"><span class="label">Support</span><div id="support" class="metric green">—</div></article>
+    <article class="card"><span class="label">Resistance</span><div id="resistance" class="metric red">—</div></article>
+  </section>
+
+  <section class="panel">
+    <div class="panelhead">
+      <div>
+        <h2>Live OI Calculation</h2>
+        <p>CE/PE OI, Change in OI, premium change and strike-level signal around ATM.</p>
+      </div>
+      <label>ATM range
+        <select id="rangeSelect">
+          <option value="5">±5</option>
+          <option value="7" selected>±7</option>
+          <option value="10">±10</option>
+        </select>
+      </label>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th>CE Signal</th><th>CE OI</th><th>CE ΔOI</th><th>CE LTP</th><th>CE Δ</th>
+            <th>Strike</th>
+            <th>PE Δ</th><th>PE LTP</th><th>PE ΔOI</th><th>PE OI</th><th>PE Signal</th>
+          </tr>
+        </thead>
+        <tbody id="body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel small">
+    <h3>Live engine notes</h3>
+    <p>The browser does not scrape NSE directly. Your pasted URL is sent to the local Node.js backend. The backend opens that NSE page to establish session cookies, then requests the option-chain JSON and returns it to the dashboard.</p>
+    <p class="warn">Polling every second can trigger NSE rate limits or temporary blocking. This build does exactly 1-second refresh as requested, but 3–5 seconds is safer for continuous use.</p>
+  </section>
+
+  <footer>Educational analysis only. OI interpretation is probabilistic and should not be used as the sole basis for a trade.</footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
