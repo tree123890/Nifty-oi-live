@@ -5,6 +5,12 @@ const crypto = require("crypto");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const GROWW_API_KEY = process.env.GROWW_API_KEY;
+const GROWW_API_SECRET = process.env.GROWW_API_SECRET;
+
+const INSTRUMENT_CSV_URL =
+  "https://growwapi-assets.groww.in/instruments/instrument.csv";
+
 app.use(express.json({ limit: "1mb" }));
 
 app.use(
@@ -15,9 +21,6 @@ app.use(
   })
 );
 
-const GROWW_API_KEY = process.env.GROWW_API_KEY;
-const GROWW_API_SECRET = process.env.GROWW_API_SECRET;
-
 const state = {
   accessToken: null,
   tokenExpiry: 0,
@@ -25,6 +28,9 @@ const state = {
   symbol: "NIFTY",
   exchange: "NSE",
   expiryDate: "",
+
+  instrumentCsv: null,
+  instrumentCsvAt: 0,
 
   latest: null,
   lastSuccessAt: 0,
@@ -53,19 +59,23 @@ function normalizeGrowwError(data, fallback) {
   );
 }
 
-function todayISTDateString() {
-  const now = new Date();
+function todayIST() {
+  const parts =
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(new Date());
 
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).formatToParts(now);
+  const year =
+    parts.find(p => p.type === "year")?.value;
 
-  const year = parts.find(p => p.type === "year")?.value;
-  const month = parts.find(p => p.type === "month")?.value;
-  const day = parts.find(p => p.type === "day")?.value;
+  const month =
+    parts.find(p => p.type === "month")?.value;
+
+  const day =
+    parts.find(p => p.type === "day")?.value;
 
   return `${year}-${month}-${day}`;
 }
@@ -89,12 +99,14 @@ async function getAccessToken() {
     return state.accessToken;
   }
 
-  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const timestamp =
+    Math.floor(Date.now() / 1000).toString();
 
-  const checksum = generateChecksum(
-    GROWW_API_SECRET,
-    timestamp
-  );
+  const checksum =
+    generateChecksum(
+      GROWW_API_SECRET,
+      timestamp
+    );
 
   const response = await fetch(
     "https://api.groww.in/v1/token/api/access",
@@ -102,9 +114,14 @@ async function getAccessToken() {
       method: "POST",
 
       headers: {
-        Authorization: `Bearer ${GROWW_API_KEY}`,
-        "Content-Type": "application/json",
-        Accept: "application/json"
+        Authorization:
+          `Bearer ${GROWW_API_KEY}`,
+
+        "Content-Type":
+          "application/json",
+
+        Accept:
+          "application/json"
       },
 
       body: JSON.stringify({
@@ -115,7 +132,8 @@ async function getAccessToken() {
     }
   );
 
-  const text = await response.text();
+  const text =
+    await response.text();
 
   let data;
 
@@ -148,7 +166,13 @@ async function getAccessToken() {
   }
 
   state.accessToken = token;
-  state.tokenExpiry = Date.now() + 30 * 60 * 1000;
+
+  state.tokenExpiry =
+    Date.now() + 30 * 60 * 1000;
+
+  console.log(
+    "Groww access token generated"
+  );
 
   return token;
 }
@@ -159,23 +183,31 @@ async function getAccessToken() {
 // --------------------------------------------------
 
 async function growwGet(url) {
-  let token = await getAccessToken();
+  let token =
+    await getAccessToken();
 
-  async function request() {
+  async function doRequest() {
     return fetch(url, {
       method: "GET",
 
       headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`,
-        "X-API-VERSION": "1.0"
+        Accept:
+          "application/json",
+
+        Authorization:
+          `Bearer ${token}`,
+
+        "X-API-VERSION":
+          "1.0"
       },
 
-      cache: "no-store"
+      cache:
+        "no-store"
     });
   }
 
-  let response = await request();
+  let response =
+    await doRequest();
 
   if (
     response.status === 401 ||
@@ -184,17 +216,21 @@ async function growwGet(url) {
     state.accessToken = null;
     state.tokenExpiry = 0;
 
-    token = await getAccessToken();
+    token =
+      await getAccessToken();
 
-    response = await request();
+    response =
+      await doRequest();
   }
 
-  const text = await response.text();
+  const text =
+    await response.text();
 
   let data;
 
   try {
-    data = JSON.parse(text);
+    data =
+      JSON.parse(text);
   } catch {
     throw new Error(
       `Groww returned invalid JSON. HTTP ${response.status}`
@@ -227,538 +263,157 @@ async function growwGet(url) {
 
 
 // --------------------------------------------------
-// Find nearest expiry automatically
+// CSV parser
+// --------------------------------------------------
+
+function parseCsvLine(line) {
+  const values = [];
+  let current = "";
+  let insideQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (
+        insideQuotes &&
+        line[i + 1] === '"'
+      ) {
+        current += '"';
+        i++;
+      } else {
+        insideQuotes =
+          !insideQuotes;
+      }
+    } else if (
+      char === "," &&
+      !insideQuotes
+    ) {
+      values.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  values.push(current);
+
+  return values;
+}
+
+function parseInstrumentCsv(csv) {
+  const lines =
+    csv
+      .split(/\r?\n/)
+      .filter(line => line.trim());
+
+  if (!lines.length) {
+    throw new Error(
+      "Groww instrument CSV is empty"
+    );
+  }
+
+  const headers =
+    parseCsvLine(lines[0])
+      .map(x => x.trim());
+
+  return lines
+    .slice(1)
+    .map(line => {
+      const values =
+        parseCsvLine(line);
+
+      const row = {};
+
+      headers.forEach(
+        (header, index) => {
+          row[header] =
+            values[index]?.trim() || "";
+        }
+      );
+
+      return row;
+    });
+}
+
+
+// --------------------------------------------------
+// Download Groww instrument master
+// --------------------------------------------------
+
+async function getInstrumentRows() {
+  const maxAge =
+    30 * 60 * 1000;
+
+  if (
+    state.instrumentCsv &&
+    Date.now() -
+      state.instrumentCsvAt <
+      maxAge
+  ) {
+    return state.instrumentCsv;
+  }
+
+  console.log(
+    "Downloading Groww instrument master..."
+  );
+
+  const response =
+    await fetch(
+      INSTRUMENT_CSV_URL,
+      {
+        cache:
+          "no-store"
+      }
+    );
+
+  if (!response.ok) {
+    throw new Error(
+      `Groww instrument CSV HTTP ${response.status}`
+    );
+  }
+
+  const csv =
+    await response.text();
+
+  const rows =
+    parseInstrumentCsv(csv);
+
+  state.instrumentCsv =
+    rows;
+
+  state.instrumentCsvAt =
+    Date.now();
+
+  console.log(
+    "Instrument rows loaded:",
+    rows.length
+  );
+
+  return rows;
+}
+
+
+// --------------------------------------------------
+// Find nearest current expiry
 // --------------------------------------------------
 
 async function findNearestExpiry() {
-  const today = todayISTDateString();
-  const now = new Date();
-
-  const year = Number(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: "Asia/Kolkata",
-      year: "numeric"
-    }).format(now)
-  );
-
-  const month = Number(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: "Asia/Kolkata",
-      month: "numeric"
-    }).format(now)
-  );
-
-  async function fetchExpiries(y, m) {
-    const url =
-      "https://api.groww.in/v1/historical/expiries" +
-      `?exchange=${encodeURIComponent(state.exchange)}` +
-      `&underlying_symbol=${encodeURIComponent(state.symbol)}` +
-      `&year=${y}` +
-      `&month=${m}`;
-
-    const data = await growwGet(url);
-
-    return (
-      data?.payload?.expiries ||
-      data?.expiries ||
-      []
-    );
-  }
-
-  let expiries = await fetchExpiries(year, month);
-
-  let futureExpiries = expiries
-    .filter(date => date >= today)
-    .sort();
-
-  if (futureExpiries.length > 0) {
-    return futureExpiries[0];
-  }
-
-  let nextYear = year;
-  let nextMonth = month + 1;
-
-  if (nextMonth === 13) {
-    nextMonth = 1;
-    nextYear += 1;
-  }
-
-  expiries = await fetchExpiries(
-    nextYear,
-    nextMonth
-  );
-
-  futureExpiries = expiries
-    .filter(date => date >= today)
-    .sort();
-
-  if (futureExpiries.length === 0) {
-    throw new Error(
-      "No future Groww expiry found for NIFTY"
-    );
-  }
-
-  return futureExpiries[0];
-}
-
-
-// --------------------------------------------------
-// Fetch option chain
-// --------------------------------------------------
-
-async function fetchOptionChain() {
-  if (!state.expiryDate) {
-    state.expiryDate = await findNearestExpiry();
-
-    console.log(
-      "Nearest expiry selected:",
-      state.expiryDate
-    );
-  }
-
-  const url =
-    "https://api.groww.in/v1/option-chain/" +
-    `exchange/${encodeURIComponent(state.exchange)}/` +
-    `underlying/${encodeURIComponent(state.symbol)}` +
-    `?expiry_date=${encodeURIComponent(state.expiryDate)}`;
-
-  const data = await growwGet(url);
-
-  const payload =
-    data?.payload || data;
-
-  if (!payload?.strikes) {
-    throw new Error(
-      "Groww returned no option-chain strikes"
-    );
-  }
-
-  return payload;
-}
-
-
-// --------------------------------------------------
-// Convert Groww chain
-// --------------------------------------------------
-
-function convertGrowwChain(payload) {
-  const rows = [];
-
-  for (
-    const [strikeText, contracts]
-    of Object.entries(payload.strikes || {})
-  ) {
-    const strike = Number(strikeText);
-
-    const ce = contracts?.CE || null;
-    const pe = contracts?.PE || null;
-
-    rows.push({
-      strikePrice: strike,
-
-      CE: ce
-        ? {
-            strikePrice: strike,
-            lastPrice: ce.ltp ?? 0,
-            openInterest: ce.open_interest ?? 0,
-            totalTradedVolume: ce.volume ?? 0,
-
-            delta: ce.greeks?.delta ?? null,
-            gamma: ce.greeks?.gamma ?? null,
-            theta: ce.greeks?.theta ?? null,
-            vega: ce.greeks?.vega ?? null,
-            rho: ce.greeks?.rho ?? null,
-            impliedVolatility: ce.greeks?.iv ?? null,
-
-            identifier: ce.trading_symbol ?? ""
-          }
-        : null,
-
-      PE: pe
-        ? {
-            strikePrice: strike,
-            lastPrice: pe.ltp ?? 0,
-            openInterest: pe.open_interest ?? 0,
-            totalTradedVolume: pe.volume ?? 0,
-
-            delta: pe.greeks?.delta ?? null,
-            gamma: pe.greeks?.gamma ?? null,
-            theta: pe.greeks?.theta ?? null,
-            vega: pe.greeks?.vega ?? null,
-            rho: pe.greeks?.rho ?? null,
-            impliedVolatility: pe.greeks?.iv ?? null,
-
-            identifier: pe.trading_symbol ?? ""
-          }
-        : null
-    });
-  }
-
-  rows.sort(
-    (a, b) =>
-      a.strikePrice - b.strikePrice
-  );
-
-  const totalCallOI =
-    rows.reduce(
-      (sum, row) =>
-        sum + Number(row.CE?.openInterest || 0),
-      0
-    );
-
-  const totalPutOI =
-    rows.reduce(
-      (sum, row) =>
-        sum + Number(row.PE?.openInterest || 0),
-      0
-    );
-
-  const pcr =
-    totalCallOI > 0
-      ? totalPutOI / totalCallOI
-      : null;
-
-  const support =
-    [...rows]
-      .filter(row => row.PE)
-      .sort(
-        (a, b) =>
-          Number(b.PE?.openInterest || 0) -
-          Number(a.PE?.openInterest || 0)
-      )[0]?.strikePrice || null;
-
-  const resistance =
-    [...rows]
-      .filter(row => row.CE)
-      .sort(
-        (a, b) =>
-          Number(b.CE?.openInterest || 0) -
-          Number(a.CE?.openInterest || 0)
-      )[0]?.strikePrice || null;
-
-  return {
-    records: {
-      underlyingValue:
-        payload.underlying_ltp ?? null,
-
-      data: rows
-    },
-
-    filtered: {
-      data: rows
-    },
-
-    groww: {
-      exchange: state.exchange,
-      symbol: state.symbol,
-      expiryDate: state.expiryDate,
-
-      totalCallOI,
-      totalPutOI,
-      pcr,
-      support,
-      resistance
-    }
-  };
-}
-
-
-// --------------------------------------------------
-// Refresh
-// --------------------------------------------------
-
-async function refreshNow() {
-  if (state.refreshing) {
-    return;
-  }
-
-  state.refreshing = true;
-
-  try {
-    const payload =
-      await fetchOptionChain();
-
-    state.latest =
-      convertGrowwChain(payload);
-
-    state.lastSuccessAt =
-      Date.now();
-
-    state.lastError = null;
-
-  } catch (error) {
-
-    console.error(
-      "Groww error:",
-      error.message
-    );
-
-    state.lastError = {
-      message: error.message,
-      at: Date.now()
-    };
-
-  } finally {
-
-    state.refreshing = false;
-
-  }
-}
-
-
-// --------------------------------------------------
-// Configure
-// --------------------------------------------------
-
-app.post(
-  "/api/configure",
-  async (req, res) => {
-    try {
-      state.symbol =
-        String(
-          req.body?.symbol || "NIFTY"
-        )
-          .trim()
-          .toUpperCase();
-
-      state.exchange =
-        String(
-          req.body?.exchange || "NSE"
-        )
-          .trim()
-          .toUpperCase();
-
-      state.expiryDate = "";
-
-      state.latest = null;
-      state.lastError = null;
-
-      await refreshNow();
-
-      res
-        .status(
-          state.latest ? 200 : 502
-        )
-        .json({
-          ok: !!state.latest,
-
-          symbol: state.symbol,
-          exchange: state.exchange,
-
-          expiryDate:
-            state.expiryDate || null,
-
-          lastSuccessAt:
-            state.lastSuccessAt || null,
-
-          error:
-            state.lastError
-        });
-
-    } catch (error) {
-
-      res.status(400).json({
-        ok: false,
-        error: {
-          message: error.message
-        }
-      });
-
-    }
-  }
-);
-
-
-// --------------------------------------------------
-// Snapshot
-// --------------------------------------------------
-
-app.get(
-  "/api/snapshot",
-  async (_req, res) => {
-
-    try {
-      await refreshNow();
-    } catch {}
-
-    res.set(
-      "Cache-Control",
-      "no-store"
-    );
-
-    res.json({
-      ok: !!state.latest,
-
-      symbol: state.symbol,
-      exchange: state.exchange,
-
-      expiryDate:
-        state.expiryDate || null,
-
-      fetchedAt:
-        state.lastSuccessAt || null,
-
-      refreshing:
-        state.refreshing,
-
-      error:
-        state.lastError,
-
-      data:
-        state.latest
-    });
-  }
-);
-
-
-// --------------------------------------------------
-// Test authentication
-// --------------------------------------------------
-
-app.get(
-  "/api/groww-test",
-  async (_req, res) => {
-    try {
-      const token =
-        await getAccessToken();
-
-      res.json({
-        ok: true,
-        message:
-          "Groww authentication successful",
-        tokenReceived:
-          !!token
-      });
-
-    } catch (error) {
-
-      res.status(502).json({
-        ok: false,
-        error: {
-          message:
-            error.message
-        }
-      });
-
-    }
-  }
-);
-
-
-// --------------------------------------------------
-// Test auto expiry
-// --------------------------------------------------
-
-app.get(
-  "/api/expiry-test",
-  async (_req, res) => {
-    try {
-      const expiry =
-        await findNearestExpiry();
-
-      res.json({
-        ok: true,
-        symbol: state.symbol,
-        exchange: state.exchange,
-        nearestExpiry: expiry
-      });
-
-    } catch (error) {
-
-      res.status(502).json({
-        ok: false,
-        error: {
-          message:
-            error.message
-        }
-      });
-
-    }
-  }
-);
-
-
-// --------------------------------------------------
-// Status
-// --------------------------------------------------
-
-app.get(
-  "/api/status",
-  (_req, res) => {
-
-    res.json({
-      ok: true,
-
-      provider: "Groww",
-
-      credentialsConfigured:
-        !!(
-          GROWW_API_KEY &&
-          GROWW_API_SECRET
-        ),
-
-      symbol:
-        state.symbol,
-
-      exchange:
-        state.exchange,
-
-      expiryDate:
-        state.expiryDate || null,
-
-      hasData:
-        !!state.latest,
-
-      lastSuccessAt:
-        state.lastSuccessAt || null,
-
-      lastError:
-        state.lastError
-    });
-
-  }
-);
-
-
-// --------------------------------------------------
-// Health
-// --------------------------------------------------
-
-app.get(
-  "/health",
-  (_req, res) => {
-    res.status(200).send("ok");
-  }
-);
-
-
-// --------------------------------------------------
-// Frontend
-// --------------------------------------------------
-
-app.get(
-  "*",
-  (_req, res) => {
-    res.sendFile(
-      path.join(
-        __dirname,
-        "public",
-        "index.html"
-      )
-    );
-  }
-);
-
-
-// --------------------------------------------------
-// Start
-// --------------------------------------------------
-
-app.listen(
-  PORT,
-  () => {
-    console.log(
-      `Groww NIFTY OI server running on port ${PORT}`
-    );
-  }
-);
+  const rows =
+    await getInstrumentRows();
+
+  const today =
+    todayIST();
+
+  const expiries =
+    rows
+      .filter(row => {
+        return (
+          row.exchange?.toUpperCase() ===
+            state.exchange &&
+
+          row.segment?.toUpperCase() ===
+            "FNO" &&
+
+          row.underlying_symbol?.toUpperCase() ===
+            state
