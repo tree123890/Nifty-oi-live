@@ -53,6 +53,23 @@ function normalizeGrowwError(data, fallback) {
   );
 }
 
+function todayISTDateString() {
+  const now = new Date();
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+
+  const year = parts.find(p => p.type === "year")?.value;
+  const month = parts.find(p => p.type === "month")?.value;
+  const day = parts.find(p => p.type === "day")?.value;
+
+  return `${year}-${month}-${day}`;
+}
+
 
 // --------------------------------------------------
 // Groww authentication
@@ -65,7 +82,6 @@ async function getAccessToken() {
     );
   }
 
-  // Reuse token if still cached
   if (
     state.accessToken &&
     Date.now() < state.tokenExpiry
@@ -132,13 +148,7 @@ async function getAccessToken() {
   }
 
   state.accessToken = token;
-
-  // Cache for 30 minutes.
-  // If Groww rejects it later, it will be regenerated.
-  state.tokenExpiry =
-    Date.now() + 30 * 60 * 1000;
-
-  console.log("Groww access token generated");
+  state.tokenExpiry = Date.now() + 30 * 60 * 1000;
 
   return token;
 }
@@ -167,7 +177,6 @@ async function growwGet(url) {
 
   let response = await request();
 
-  // Token may be stale
   if (
     response.status === 401 ||
     response.status === 403
@@ -218,13 +227,92 @@ async function growwGet(url) {
 
 
 // --------------------------------------------------
-// Fetch Groww option chain
+// Find nearest expiry automatically
+// --------------------------------------------------
+
+async function findNearestExpiry() {
+  const today = todayISTDateString();
+  const now = new Date();
+
+  const year = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric"
+    }).format(now)
+  );
+
+  const month = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Kolkata",
+      month: "numeric"
+    }).format(now)
+  );
+
+  async function fetchExpiries(y, m) {
+    const url =
+      "https://api.groww.in/v1/historical/expiries" +
+      `?exchange=${encodeURIComponent(state.exchange)}` +
+      `&underlying_symbol=${encodeURIComponent(state.symbol)}` +
+      `&year=${y}` +
+      `&month=${m}`;
+
+    const data = await growwGet(url);
+
+    return (
+      data?.payload?.expiries ||
+      data?.expiries ||
+      []
+    );
+  }
+
+  let expiries = await fetchExpiries(year, month);
+
+  let futureExpiries = expiries
+    .filter(date => date >= today)
+    .sort();
+
+  if (futureExpiries.length > 0) {
+    return futureExpiries[0];
+  }
+
+  let nextYear = year;
+  let nextMonth = month + 1;
+
+  if (nextMonth === 13) {
+    nextMonth = 1;
+    nextYear += 1;
+  }
+
+  expiries = await fetchExpiries(
+    nextYear,
+    nextMonth
+  );
+
+  futureExpiries = expiries
+    .filter(date => date >= today)
+    .sort();
+
+  if (futureExpiries.length === 0) {
+    throw new Error(
+      "No future Groww expiry found for NIFTY"
+    );
+  }
+
+  return futureExpiries[0];
+}
+
+
+// --------------------------------------------------
+// Fetch option chain
 // --------------------------------------------------
 
 async function fetchOptionChain() {
   if (!state.expiryDate) {
-    throw new Error(
-      "Expiry date is not configured"
+    state.expiryDate = await findNearestExpiry();
+
+    console.log(
+      "Nearest expiry selected:",
+      state.expiryDate
     );
   }
 
@@ -250,7 +338,7 @@ async function fetchOptionChain() {
 
 
 // --------------------------------------------------
-// Convert Groww format to dashboard-friendly format
+// Convert Groww chain
 // --------------------------------------------------
 
 function convertGrowwChain(payload) {
@@ -272,26 +360,17 @@ function convertGrowwChain(payload) {
         ? {
             strikePrice: strike,
             lastPrice: ce.ltp ?? 0,
-            openInterest:
-              ce.open_interest ?? 0,
-            totalTradedVolume:
-              ce.volume ?? 0,
+            openInterest: ce.open_interest ?? 0,
+            totalTradedVolume: ce.volume ?? 0,
 
-            delta:
-              ce.greeks?.delta ?? null,
-            gamma:
-              ce.greeks?.gamma ?? null,
-            theta:
-              ce.greeks?.theta ?? null,
-            vega:
-              ce.greeks?.vega ?? null,
-            rho:
-              ce.greeks?.rho ?? null,
-            impliedVolatility:
-              ce.greeks?.iv ?? null,
+            delta: ce.greeks?.delta ?? null,
+            gamma: ce.greeks?.gamma ?? null,
+            theta: ce.greeks?.theta ?? null,
+            vega: ce.greeks?.vega ?? null,
+            rho: ce.greeks?.rho ?? null,
+            impliedVolatility: ce.greeks?.iv ?? null,
 
-            identifier:
-              ce.trading_symbol ?? ""
+            identifier: ce.trading_symbol ?? ""
           }
         : null,
 
@@ -299,26 +378,17 @@ function convertGrowwChain(payload) {
         ? {
             strikePrice: strike,
             lastPrice: pe.ltp ?? 0,
-            openInterest:
-              pe.open_interest ?? 0,
-            totalTradedVolume:
-              pe.volume ?? 0,
+            openInterest: pe.open_interest ?? 0,
+            totalTradedVolume: pe.volume ?? 0,
 
-            delta:
-              pe.greeks?.delta ?? null,
-            gamma:
-              pe.greeks?.gamma ?? null,
-            theta:
-              pe.greeks?.theta ?? null,
-            vega:
-              pe.greeks?.vega ?? null,
-            rho:
-              pe.greeks?.rho ?? null,
-            impliedVolatility:
-              pe.greeks?.iv ?? null,
+            delta: pe.greeks?.delta ?? null,
+            gamma: pe.greeks?.gamma ?? null,
+            theta: pe.greeks?.theta ?? null,
+            vega: pe.greeks?.vega ?? null,
+            rho: pe.greeks?.rho ?? null,
+            impliedVolatility: pe.greeks?.iv ?? null,
 
-            identifier:
-              pe.trading_symbol ?? ""
+            identifier: pe.trading_symbol ?? ""
           }
         : null
     });
@@ -332,20 +402,14 @@ function convertGrowwChain(payload) {
   const totalCallOI =
     rows.reduce(
       (sum, row) =>
-        sum +
-        Number(
-          row.CE?.openInterest || 0
-        ),
+        sum + Number(row.CE?.openInterest || 0),
       0
     );
 
   const totalPutOI =
     rows.reduce(
       (sum, row) =>
-        sum +
-        Number(
-          row.PE?.openInterest || 0
-        ),
+        sum + Number(row.PE?.openInterest || 0),
       0
     );
 
@@ -355,29 +419,21 @@ function convertGrowwChain(payload) {
       : null;
 
   const support =
-    rows
-      .filter((row) => row.PE)
+    [...rows]
+      .filter(row => row.PE)
       .sort(
         (a, b) =>
-          Number(
-            b.PE?.openInterest || 0
-          ) -
-          Number(
-            a.PE?.openInterest || 0
-          )
+          Number(b.PE?.openInterest || 0) -
+          Number(a.PE?.openInterest || 0)
       )[0]?.strikePrice || null;
 
   const resistance =
-    rows
-      .filter((row) => row.CE)
+    [...rows]
+      .filter(row => row.CE)
       .sort(
         (a, b) =>
-          Number(
-            b.CE?.openInterest || 0
-          ) -
-          Number(
-            a.CE?.openInterest || 0
-          )
+          Number(b.CE?.openInterest || 0) -
+          Number(a.CE?.openInterest || 0)
       )[0]?.strikePrice || null;
 
   return {
@@ -393,14 +449,9 @@ function convertGrowwChain(payload) {
     },
 
     groww: {
-      exchange:
-        state.exchange,
-
-      symbol:
-        state.symbol,
-
-      expiryDate:
-        state.expiryDate,
+      exchange: state.exchange,
+      symbol: state.symbol,
+      expiryDate: state.expiryDate,
 
       totalCallOI,
       totalPutOI,
@@ -413,7 +464,7 @@ function convertGrowwChain(payload) {
 
 
 // --------------------------------------------------
-// Refresh cache
+// Refresh
 // --------------------------------------------------
 
 async function refreshNow() {
@@ -435,79 +486,49 @@ async function refreshNow() {
 
     state.lastError = null;
 
-    console.log(
-      "Groww option chain updated:",
-      state.symbol,
-      state.expiryDate
-    );
   } catch (error) {
+
     console.error(
       "Groww error:",
       error.message
     );
 
     state.lastError = {
-      message:
-        error.message,
-
-      at:
-        Date.now()
+      message: error.message,
+      at: Date.now()
     };
+
   } finally {
+
     state.refreshing = false;
+
   }
 }
 
 
 // --------------------------------------------------
 // Configure
-//
-// Frontend can send:
-// {
-//   symbol: "NIFTY",
-//   exchange: "NSE",
-//   expiryDate: "2026-09-15"
-// }
-//
 // --------------------------------------------------
 
 app.post(
   "/api/configure",
   async (req, res) => {
     try {
-      const symbol =
+      state.symbol =
         String(
           req.body?.symbol || "NIFTY"
         )
           .trim()
           .toUpperCase();
 
-      const exchange =
+      state.exchange =
         String(
           req.body?.exchange || "NSE"
         )
           .trim()
           .toUpperCase();
 
-      const expiryDate =
-        String(
-          req.body?.expiryDate || ""
-        ).trim();
-
-      if (!expiryDate) {
-        return res.status(400).json({
-          ok: false,
-
-          error: {
-            message:
-              "expiryDate is required in YYYY-MM-DD format"
-          }
-        });
-      }
-
-      state.symbol = symbol;
-      state.exchange = exchange;
-      state.expiryDate = expiryDate;
+      state.expiryDate = "";
 
       state.latest = null;
       state.lastError = null;
@@ -519,17 +540,13 @@ app.post(
           state.latest ? 200 : 502
         )
         .json({
-          ok:
-            !!state.latest,
+          ok: !!state.latest,
 
-          symbol:
-            state.symbol,
-
-          exchange:
-            state.exchange,
+          symbol: state.symbol,
+          exchange: state.exchange,
 
           expiryDate:
-            state.expiryDate,
+            state.expiryDate || null,
 
           lastSuccessAt:
             state.lastSuccessAt || null,
@@ -537,15 +554,16 @@ app.post(
           error:
             state.lastError
         });
+
     } catch (error) {
+
       res.status(400).json({
         ok: false,
-
         error: {
-          message:
-            error.message
+          message: error.message
         }
       });
+
     }
   }
 );
@@ -558,11 +576,10 @@ app.post(
 app.get(
   "/api/snapshot",
   async (_req, res) => {
-    if (state.expiryDate) {
-      try {
-        await refreshNow();
-      } catch {}
-    }
+
+    try {
+      await refreshNow();
+    } catch {}
 
     res.set(
       "Cache-Control",
@@ -570,17 +587,13 @@ app.get(
     );
 
     res.json({
-      ok:
-        !!state.latest,
+      ok: !!state.latest,
 
-      symbol:
-        state.symbol,
-
-      exchange:
-        state.exchange,
+      symbol: state.symbol,
+      exchange: state.exchange,
 
       expiryDate:
-        state.expiryDate,
+        state.expiryDate || null,
 
       fetchedAt:
         state.lastSuccessAt || null,
@@ -599,7 +612,7 @@ app.get(
 
 
 // --------------------------------------------------
-// Groww connection test
+// Test authentication
 // --------------------------------------------------
 
 app.get(
@@ -611,22 +624,55 @@ app.get(
 
       res.json({
         ok: true,
-
         message:
           "Groww authentication successful",
-
         tokenReceived:
           !!token
       });
+
     } catch (error) {
+
       res.status(502).json({
         ok: false,
-
         error: {
           message:
             error.message
         }
       });
+
+    }
+  }
+);
+
+
+// --------------------------------------------------
+// Test auto expiry
+// --------------------------------------------------
+
+app.get(
+  "/api/expiry-test",
+  async (_req, res) => {
+    try {
+      const expiry =
+        await findNearestExpiry();
+
+      res.json({
+        ok: true,
+        symbol: state.symbol,
+        exchange: state.exchange,
+        nearestExpiry: expiry
+      });
+
+    } catch (error) {
+
+      res.status(502).json({
+        ok: false,
+        error: {
+          message:
+            error.message
+        }
+      });
+
     }
   }
 );
@@ -639,11 +685,11 @@ app.get(
 app.get(
   "/api/status",
   (_req, res) => {
+
     res.json({
       ok: true,
 
-      provider:
-        "Groww",
+      provider: "Groww",
 
       credentialsConfigured:
         !!(
@@ -658,7 +704,7 @@ app.get(
         state.exchange,
 
       expiryDate:
-        state.expiryDate,
+        state.expiryDate || null,
 
       hasData:
         !!state.latest,
@@ -669,6 +715,7 @@ app.get(
       lastError:
         state.lastError
     });
+
   }
 );
 
@@ -680,9 +727,7 @@ app.get(
 app.get(
   "/health",
   (_req, res) => {
-    res
-      .status(200)
-      .send("ok");
+    res.status(200).send("ok");
   }
 );
 
